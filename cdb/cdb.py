@@ -1,6 +1,6 @@
 ###
 ## cdb.py is a wrapper around the cdb.exe debugger.
-## This code is heavily based on pycbd by fishstiqz.
+## This code is heavily based on pycdb by fishstiqz.
 ###
 
 # -author:  @bannedit0
