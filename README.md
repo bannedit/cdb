@@ -14,6 +14,22 @@ When the cdb class is inherited it provides the subclass with methods for handli
 
 Implementing the on_breakpoint() function will allow the subclass to handle breakpoints. Additionally, implementing the on_exception() function in the subclass allows handling of exceptions.
 
+```python
+from cdb import cdb
+
+class Debugger(cdb):
+    def on_breakpoint(self):
+        print("Breakpoint hit")
+        print(self.registers)
+
+dbg = Debugger()
+dbg.spawn(['notepad.exe'])
+dbg.set_bp('kernel32!CreateFileA')
+dbg.go()
+````
+
+The above example shows how to use inheritance to handle breakpoints via the on_breakpoint() method.
+
 Beyond using the on_breakpoint() function, custom handlers can also be implemented independent of the cdb class by passing a handler to the set_bp() function.
 
 Example:
