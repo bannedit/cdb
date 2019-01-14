@@ -18,16 +18,28 @@ BREAKPOINT_UNRESOLVED   = 2
 BREAKPOINT_HARDWARE     = 3
 BREAKPOINT_SYMBOLIC     = 4
 
+EXCEPTION_ACCESS_VIOLATION          = 0xc0000005
 EXCEPTION_DATATYPE_MISALIGNMENT     = 0x80000002
-EXCEPTION_ACCESS_VIOLATION          = 0xC0000005
-EXCEPTION_ILLEGAL_INSTRUCTION       = 0xC000001D
-EXCEPTION_ARRAY_BOUNDS_EXCEEDED     = 0xC000008C
-EXCEPTION_INT_DIVIDE_BY_ZERO        = 0xC0000094
-EXCEPTION_INT_OVERFLOW              = 0xC0000095
-EXCEPTION_STACK_OVERFLOW            = 0xC00000FD
-EXCEPTION_EXECUTE_HANDLER           =  1
-EXCEPTION_CONTINUE_SEARCH           =  0
-EXCEPTION_CONTINUE_EXECUTION        = -1
+EXCEPTION_BREAKPOINT                = 0x80000003
+EXCEPTION_SINGLE_STEP               = 0x80000004
+EXCEPTION_ARRAY_BOUNDS_EXCEEDED     = 0xc000008c
+EXCEPTION_FLT_DENORMAL_OPERAND      = 0xc000008d
+EXCEPTION_FLT_DIVIDE_BY_ZERO        = 0xc000008e
+EXCEPTION_FLT_INEXACT_RESULT        = 0xc000008f
+EXCEPTION_FLT_INVALID_OPERATION     = 0xc0000090
+EXCEPTION_FLT_OVERFLOW              = 0xc0000091
+EXCEPTION_FLT_STACK_CHECK           = 0xc0000092
+EXCEPTION_FLT_UNDERFLOW             = 0xc0000093
+EXCEPTION_INT_DIVIDE_BY_ZERO        = 0xc0000094
+EXCEPTION_INT_OVERFLOW              = 0xc0000095
+EXCEPTION_PRIV_INSTRUCTION          = 0xc0000096
+EXCEPTION_IN_PAGE_ERROR             = 0xc0000006
+EXCEPTION_ILLEGAL_INSTRUCTION       = 0xc000001d
+EXCEPTION_NONCONTINUABLE_EXCEPTION  = 0xc0000025
+EXCEPTION_STACK_OVERFLOW            = 0xc00000fd
+EXCEPTION_INVALID_DISPOSITION       = 0xc0000026
+EXCEPTION_GUARD_PAGE                = 0x80000001
+EXCEPTION_INVALID_HANDLE            = 0xc0000008
 
 # helper function to take addresses from cdb and convert to int
 def parse_address(address):
@@ -234,9 +246,9 @@ class cdb():
         self.cmdline = self.build_cmdline(['-p', str(pid)] + arguments)
         self._run()
 
-    def go(self):
+    def go(self, timeout=None):
         self.write_pipe('g')
-        self.read_to_prompt()
+        self.read_to_prompt(timeout=Timeout)
         self.initial_break = False
 
         # before we return control to the user we need to check if there was an exception
@@ -364,7 +376,7 @@ class cdb():
         if isinstance(value, basestring):
             return self.search(value, "b", begin, end)
 
-    def read_to_prompt(self, keep_output=True):
+    def read_to_prompt(self, keep_output=True, timeout=None):
         last = None
         buf = ''
 
