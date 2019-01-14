@@ -59,7 +59,7 @@ class ExceptionEvent():
         self.exception_code = code
 
     def __str__(self):
-        return "ExceptionEvent: <%x:%x> %08x - %s" (pid, tid, code, description)
+        return "ExceptionEvent: <%x:%x> %08x - %s" % (self.pid, self.tid, self.exception_code, self.description)
 
 class BreakpointEvent():
     def __init__(self, num):
@@ -160,14 +160,13 @@ class Reader(threading.Thread):
             num = int(m.group(1))
             self.queue.put(BreakpointEvent(num))
 
-        if line.startswith('Last event'):
+        if 'Last event' in line:
             event = line.split(': ')
             pid, tid = event[1].split('.')
             description = event[2]
-
             # need to check if this is always printed in hex
-            code = int(event[2].split('code ').split('(')[0], 16)
-            self.queue.put(ExceptionEvent(pid, tid, description, code))
+            code = int(event[2].split('code ')[1].split('(')[0], 16)
+            self.queue.put(ExceptionEvent(int(pid, 16), int(tid, 16), description, code))
 
 class cdb():
     def __init__(self, cdb_path=None, debug_children=False, auto_processor=True):
@@ -246,14 +245,18 @@ class cdb():
         self.cmdline = self.build_cmdline(['-p', str(pid)] + arguments)
         self._run()
 
-    def go(self, timeout=None):
+    def go(self):
         self.write_pipe('g')
-        self.read_to_prompt(timeout=Timeout)
+        self.read_to_prompt()
         self.initial_break = False
 
         # before we return control to the user we need to check if there was an exception
         # that needs to be kept track of
         self.debuggable = True
+
+        if self.processor_mode and self.auto_processor:
+            self.get_machinetype()
+
         self._get_registers()
         self.execute('.lastevent')
 
@@ -376,7 +379,7 @@ class cdb():
         if isinstance(value, basestring):
             return self.search(value, "b", begin, end)
 
-    def read_to_prompt(self, keep_output=True, timeout=None):
+    def read_to_prompt(self, keep_output=True):
         last = None
         buf = ''
 
@@ -401,9 +404,10 @@ class cdb():
                         self.debuggable = True
                         if self._initial_break:
                             self._initial_break = False
-                            if not self.processor_mode and self.auto_processor:
+                            if self.processor_mode and self.auto_processor:
                                 self.get_machinetype()
 
+                            self.execute('.lastevent')
                             self._registers = self.execute('r')
                             self._parse_registers()
                         break
@@ -452,7 +456,7 @@ class cdb():
         pass
 
     # intended to be overwritten by inheriting class
-    def on_exception(self):
+    def on_exception(self, exception):
         pass
 
     def get_modules(self):
