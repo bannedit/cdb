@@ -40,6 +40,7 @@ EXCEPTION_STACK_OVERFLOW            = 0xc00000fd
 EXCEPTION_INVALID_DISPOSITION       = 0xc0000026
 EXCEPTION_GUARD_PAGE                = 0x80000001
 EXCEPTION_INVALID_HANDLE            = 0xc0000008
+EXCEPTION_WX86_BREAKPOINT           = 0x4000001f
 
 # helper function to take addresses from cdb and convert to int
 def parse_address(address):
@@ -127,7 +128,11 @@ class Reader(threading.Thread):
     def run(self):
         line = ''
         while not self.stop_reading:
-            c = self.pipe.stdout.read(1)
+            c = self.pipe.stdout.buffer.read(1)
+            if int(c.hex(), 16) > 127:
+                continue
+            else:
+                c = c.decode()
 
             if not c:
                 self.queue.put(PipeClosed())
@@ -161,13 +166,15 @@ class Reader(threading.Thread):
             num = int(m.group(1))
             self.queue.put(BreakpointEvent(num))
 
-        if 'Last event' in line:
+        if '(first chance)' in line or '(!!! second chance !!!)' in line:
             event = line.split(': ')
-            pid, tid = event[1].split('.')
-            description = event[2]
+            pid, tid = event[0][1:-1].split('.')
+            if '(' in pid:
+                pid = pid.split('(')[1]
+            description = event[1]
 
             # need to check if this is always printed in hex
-            code = int(event[2].split('code ')[1].split('(')[0], 16)
+            code = int(event[1].split('code ')[1].split('(')[0], 16)
             # get the EXCEPTION_* variable name matching the exception code
             name = [ k for k,v in globals().items() if v == code][0]
             if not name:
@@ -205,7 +212,6 @@ class cdb():
         self._thread.start()
 
         if not self.pipe:
-            self.debuggable = False
             self.finished = True
             raise PipeClosed("PipeClosed")
 
@@ -215,27 +221,36 @@ class cdb():
         if self.auto_processor:
             self.get_machinetype()
 
+        # we can't input commands until we have read to the prompt'
+        self.debuggable = False
+        self.read_to_prompt()
+
+
     def wait(self):
         return self.read_to_prompt()
 
     def write_pipe(self, cmd):
+        if self.finished:
+            return
         # ensure we are in a debuggable state
         if not self.debuggable:
-            self.read_to_prompt()
-
-        if cmd == 'g':
-            self.debuggable = False
+            self.read_to_prompt(keep_output=False)
 
         self.pipe.stdin.write('%s\r\n' % cmd)
         self.pipe.stdin.flush()
 
+        output = self.read_to_prompt()
+
         if self.finished:
             self.debuggable = False
-            raise PipeClosed('Debugging session has already ended')
+
+        return output
 
     def execute(self, cmd, keep_output=True, exclude_prompt=True):
-        self.write_pipe(cmd)
-        output = self.read_to_prompt(keep_output=keep_output)
+        if self.finished:
+            return
+
+        output = self.write_pipe(cmd)
 
         if exclude_prompt:
             # split the output by line, remove the last line (the one containing the prompt)
@@ -252,25 +267,16 @@ class cdb():
         self._run()
 
     def go(self):
-        self.write_pipe('g')
-        self.read_to_prompt()
+        self.execute('g')
         self.initial_break = False
-
-        # before we return control to the user we need to check if there was an exception
-        # that needs to be kept track of
-        self.debuggable = True
-
-        if self.processor_mode and self.auto_processor:
-            self.get_machinetype()
-
-        self._get_registers()
-        self.execute('.lastevent')
+        self.debuggable = False
 
     def quit(self):
         self._thread.stop_reading = True
         self.finished = True
 
         try:
+            self.debuggable = True
             if self.attached:
                 self.write_pipe('qd')
             else:
@@ -390,8 +396,9 @@ class cdb():
         buf = ''
 
         while True:
+            self.reading_prompt = True
             if self.finished:
-                raise PipeClosed("Debugging session has already finished")
+                break
             try:
                 event = self._thread.queue.get(True)
             except queue.Empty:
@@ -410,12 +417,8 @@ class cdb():
                         self.debuggable = True
                         if self._initial_break:
                             self._initial_break = False
-                            if self.processor_mode and self.auto_processor:
+                            if not self.processor_mode and self.auto_processor:
                                 self.get_machinetype()
-
-                            self.execute('.lastevent')
-                            self._registers = self.execute('r')
-                            self._parse_registers()
                         break
                 last = c
 
@@ -441,10 +444,7 @@ class cdb():
                 self.debuggable = True
                 self.process_exception(event)
 
-        if keep_output:
-            return buf
-        else:
-            return ''
+        return buf
 
     def process_breakpoint(self, breakpoint):
         if breakpoint['handler']:
@@ -454,6 +454,10 @@ class cdb():
             self.on_breakpoint()
 
     def process_exception(self, exception):
+        if exception.exception_code == EXCEPTION_WX86_BREAKPOINT:
+                self.execute('g')
+                return
+
         self.exceptions.append(exception)
         self.on_exception(exception)
 
@@ -542,8 +546,12 @@ class cdb():
     def get_machinetype(self):
         # determine the image of the application and set the processor mode if appropriate
         # this command lists the main module name for use later
+        if self.finished:
+            return
+
         output = self.execute('lm 1ma $exentry')
         output = self.execute('!lmi %s' % output.rstrip())
+        mtype = ''
         for line in output.splitlines():
             if 'Machine Type:' in line:
                 m = re.match(r'\s*\w*\s\w*:\s[0-9]*\s\((\w*)\)', line)
