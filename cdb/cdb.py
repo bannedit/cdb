@@ -40,7 +40,7 @@ EXCEPTION_STACK_OVERFLOW            = 0xc00000fd
 EXCEPTION_INVALID_DISPOSITION       = 0xc0000026
 EXCEPTION_GUARD_PAGE                = 0x80000001
 EXCEPTION_INVALID_HANDLE            = 0xc0000008
-EXCEPTION_WX86_BREAKPOINT           = 0x4000001f
+EXCEPTION_WOW64_BREAKPOINT          = 0x4000001f
 
 # helper function to take addresses from cdb and convert to int
 def parse_address(address):
@@ -167,6 +167,9 @@ class Reader(threading.Thread):
             self.queue.put(BreakpointEvent(num))
 
         if '(first chance)' in line or '(!!! second chance !!!)' in line:
+            if 'Break instruction' in line:
+                return
+
             event = line.split(': ')
             pid, tid = event[0][1:-1].split('.')
             if '(' in pid:
@@ -215,45 +218,42 @@ class cdb():
             self.finished = True
             raise PipeClosed("PipeClosed")
 
+        # we can't input commands until we have read to the prompt'
+        self.read_to_prompt()
+
         # enable module unload messages so we can track the state of modules
         self.execute('sxn ud')
 
         if self.auto_processor:
             self.get_machinetype()
 
-        # we can't input commands until we have read to the prompt'
-        self.debuggable = False
-        self.read_to_prompt()
-
 
     def wait(self):
         return self.read_to_prompt()
 
     def write_pipe(self, cmd):
-        if self.finished:
-            return
         # ensure we are in a debuggable state
         if not self.debuggable:
             self.read_to_prompt(keep_output=False)
+            self.debuggable = True
 
         self.pipe.stdin.write('%s\r\n' % cmd)
         self.pipe.stdin.flush()
-
-        output = self.read_to_prompt()
+        if not self.finished:
+                output = self.read_to_prompt()
 
         if self.finished:
             self.debuggable = False
 
         return output
 
-    def execute(self, cmd, keep_output=True, exclude_prompt=True):
+    def execute(self, cmd, exclude_prompt=True):
         if self.finished:
             return
 
         output = self.write_pipe(cmd)
 
         if exclude_prompt:
-            # split the output by line, remove the last line (the one containing the prompt)
             output = '\n'.join(output.split('\n')[:-1])
         return output
 
@@ -269,20 +269,22 @@ class cdb():
     def go(self):
         self.execute('g')
         self.initial_break = False
-        self.debuggable = False
+        self.debuggable = True
 
     def quit(self):
         self._thread.stop_reading = True
-        self.finished = True
 
         try:
             self.debuggable = True
+            self.finished = True
+
             if self.attached:
                 self.write_pipe('qd')
             else:
                 self.write_pipe('q')
             self.debuggable = False
             self.pipe.pid.kill()
+            return
         except:
             pass
 
@@ -394,9 +396,10 @@ class cdb():
     def read_to_prompt(self, keep_output=True):
         last = None
         buf = ''
+        read = True
 
-        while True:
-            self.reading_prompt = True
+        _events = []
+        while read:
             if self.finished:
                 break
             try:
@@ -413,38 +416,50 @@ class cdb():
                     # 0:007>
                     # 0:023:x86> <-- this prompt indicates the processor mode
                     # processor mode can be set to x86 when debugging a 32bit process on a 64bit machine
-                    if re.search(r"[0-9]+:[0-9]*.*>", buf, re.MULTILINE):
+                    if re.search(r"[0-9]+:[0-9]*.*\>", buf, re.MULTILINE):
                         self.debuggable = True
                         if self._initial_break:
                             self._initial_break = False
-                            if not self.processor_mode and self.auto_processor:
-                                self.get_machinetype()
                         break
                 last = c
 
-            if isinstance(event, LoadModule):
+            elif isinstance(event, LoadModule):
                 self.modules.append(event.module)
 
-            if isinstance(event, UnloadModule):
+            elif isinstance(event, UnloadModule):
                 for mod in self.modules:
                     if mod.name == event.name:
                         mod.loaded = False
 
-            if isinstance(event, PipeClosed):
+            elif isinstance(event, PipeClosed):
                 self.debuggable = False
                 self.finished = True
                 raise PipeClosed(buf)
 
-            if isinstance(event, BreakpointEvent):
-                self.debuggable = True
-                breakpoint = self.breakpoints[event.num]
-                self.process_breakpoint(breakpoint)
+            elif isinstance(event, BreakpointEvent):
+                _events.append(event)
 
-            if isinstance(event, ExceptionEvent):
-                self.debuggable = True
-                self.process_exception(event)
+            elif isinstance(event, ExceptionEvent):
+                _events.append(event)
 
-        return buf
+            else:
+                _events.append(event)
+
+        # process events that occurred while reading to prompt
+        if len(_events):
+            for event in _events:
+                if isinstance(event, BreakpointEvent):
+                    breakpoint = self.breakpoints[event.num]
+                    self.process_breakpoint(breakpoint)
+                    process_breakpoint(breakpoint)
+
+                elif isinstance(event, ExceptionEvent):
+                    self.process_exception(event)
+
+        if keep_output:
+            return buf
+        else:
+            return ''
 
     def process_breakpoint(self, breakpoint):
         if breakpoint['handler']:
@@ -454,9 +469,12 @@ class cdb():
             self.on_breakpoint()
 
     def process_exception(self, exception):
-        if exception.exception_code == EXCEPTION_WX86_BREAKPOINT:
-                self.execute('g')
-                return
+        if exception.exception_code == EXCEPTION_WOW64_BREAKPOINT:
+            self.get_machinetype()
+            self.go()
+
+        if self.finished:
+            return
 
         self.exceptions.append(exception)
         self.on_exception(exception)
@@ -549,8 +567,9 @@ class cdb():
         if self.finished:
             return
 
-        output = self.execute('lm 1ma $exentry')
-        output = self.execute('!lmi %s' % output.rstrip())
+        dll = self.execute('lm 1ma $exentry')
+        output = self.execute('!lmi %s' % dll.rstrip())
+
         mtype = ''
         for line in output.splitlines():
             if 'Machine Type:' in line:
