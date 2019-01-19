@@ -178,10 +178,16 @@ class Reader(threading.Thread):
 
             # need to check if this is always printed in hex
             code = int(event[1].split('code ')[1].split('(')[0], 16)
+
             # get the EXCEPTION_* variable name matching the exception code
-            name = [ k for k,v in globals().items() if v == code][0]
+            name = ''
+            for k, v in globals().items():
+                if v == code:
+                    name = k
+                    break
             if not name:
                 name = "UNKNOWN"
+
             self.queue.put(ExceptionEvent(int(pid, 16), int(tid, 16), description, code, name))
 
 class cdb():
