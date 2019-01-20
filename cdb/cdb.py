@@ -41,6 +41,7 @@ EXCEPTION_INVALID_DISPOSITION       = 0xc0000026
 EXCEPTION_GUARD_PAGE                = 0x80000001
 EXCEPTION_INVALID_HANDLE            = 0xc0000008
 EXCEPTION_WOW64_BREAKPOINT          = 0x4000001f
+EXCEPTION_STACK_BUFFER_OVERRUN      = 0xc0000409
 
 # helper function to take addresses from cdb and convert to int
 def parse_address(address):
@@ -129,10 +130,11 @@ class Reader(threading.Thread):
         line = ''
         while not self.stop_reading:
             c = self.pipe.stdout.buffer.read(1)
-            if int(c.hex(), 16) > 127:
-                continue
-            else:
-                c = c.decode()
+            if c:
+                if int(c.hex(), 16) > 127:
+                    continue
+                else:
+                    c = c.decode()
 
             if not c:
                 self.queue.put(PipeClosed())
